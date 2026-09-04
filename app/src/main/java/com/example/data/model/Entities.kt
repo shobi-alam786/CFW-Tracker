@@ -155,3 +155,24 @@ data class SyncRowData(
     val collectorName: String,
     val syncStatus: String
 )
+
+// --- Report screen helper models (Daily Dispatch / Weekly / Monthly / TM Project Status) ---
+
+data class DispatchDetailMaterialLine(
+    val materialName: String,
+    val quantity: Double,
+    val unit: String
+)
+
+/** One dispatch visit, enriched with beneficiary and material info, for the Reports screen. */
+data class DispatchDetail(
+    val dispatchId: Long,
+    val dispatchDate: String, // YYYY-MM-DD
+    val time: String,
+    val drrCode: String,
+    val cfwName: String,
+    val recipientName: String,
+    val recipientFcn: String,
+    val collectorName: String,
+    val materials: List<DispatchDetailMaterialLine>
+)
