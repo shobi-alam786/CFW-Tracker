@@ -97,7 +97,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // path at all (e.g. pre-v3 installs). Existing CFW data added in v3,
                     // Kobo data in v4, and per-dispatch recipients in v5 all go through
                     // addMigrations above.
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance
