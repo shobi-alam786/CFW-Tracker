@@ -415,6 +415,41 @@ class CfwRepository(
         )
     }
 
+    suspend fun getAllDispatchDetails(): List<com.example.data.model.DispatchDetail> = withContext(Dispatchers.IO) {
+        val allDispatchesList = cfwDao.getAllDispatches().first()
+        val result = mutableListOf<com.example.data.model.DispatchDetail>()
+
+        for (dispatch in allDispatchesList) {
+            val req = cfwDao.getRequestById(dispatch.requestId) ?: continue
+            val ben = cfwDao.getBeneficiaryById(req.beneficiaryId) ?: continue
+            val dMats = cfwDao.getDispatchMaterialsForDispatch(dispatch.id)
+
+            val lines = dMats.mapNotNull { dm ->
+                val reqMat = cfwDao.getRequestedMaterialById(dm.materialId) ?: return@mapNotNull null
+                com.example.data.model.DispatchDetailMaterialLine(
+                    materialName = reqMat.materialName,
+                    quantity = dm.dispatchedQuantity,
+                    unit = reqMat.unit
+                )
+            }
+
+            result.add(
+                com.example.data.model.DispatchDetail(
+                    dispatchId = dispatch.id,
+                    dispatchDate = dispatch.dispatchDate,
+                    time = dispatch.time,
+                    drrCode = ben.drrCode,
+                    cfwName = ben.cfwName,
+                    recipientName = dispatch.recipientName.ifBlank { ben.cfwName },
+                    recipientFcn = dispatch.recipientFcn.ifBlank { ben.fcnNumber },
+                    collectorName = dispatch.collectorName,
+                    materials = lines
+                )
+            )
+        }
+        result
+    }
+
     suspend fun exportAllCsv(): String = withContext(Dispatchers.IO) {
         val allDispatchesList = cfwDao.getAllDispatches().first()
         val syncRows = mutableListOf<SyncRowData>()
