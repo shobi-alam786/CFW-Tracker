@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
 import com.example.data.kobo.KoboErrorType
+import com.example.data.kobo.KoboImportEngine
 import com.example.data.kobo.KoboRepository
 import com.example.data.kobo.KoboSecureSettings
 import com.example.data.kobo.KoboSubmission
@@ -36,7 +37,9 @@ class KoboViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settings = KoboSecureSettings(application)
     private val koboDao = AppDatabase.getDatabase(application).koboDao()
+    private val cfwDao = AppDatabase.getDatabase(application).cfwDao()
     private val repository = KoboRepository(koboDao, settings)
+    private val importEngine = KoboImportEngine(cfwDao)
 
     val serverUrl: StateFlow<String> = settings.serverUrl
     val assetUid: StateFlow<String> = settings.assetUid
@@ -152,12 +155,19 @@ class KoboViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isSyncing.value = true
             when (val result = repository.syncSubmissions()) {
-                is KoboSyncResult.Success ->
+                is KoboSyncResult.Success -> {
+                    // Push the cached submissions into the app's own Beneficiary/MaterialRequest
+                    // tables so Reports, Dashboard, and CSV export reflect the latest Kobo data.
+                    val uid = assetUid.value
+                    if (uid.isNotBlank()) {
+                        importEngine.importAll(repository.getAllCachedSubmissionsOnce(uid))
+                    }
                     _userNotice.value = if (result.downloadedCount > 0) {
                         "Synced ${result.downloadedCount} submission(s)."
                     } else {
                         "No submissions found for this project."
                     }
+                }
                 is KoboSyncResult.NotConfigured ->
                     _userNotice.value = "Please configure KoboToolbox Data settings first."
                 is KoboSyncResult.Error ->
