@@ -1,257 +1,278 @@
-package com.example.ui.screens
+package com.example.data.qr
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.data.qr.RecipientQrParser
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
-@Composable
-fun RecipientQrScannerScreen(
-    onBack: () -> Unit,
-    onRecipientScanned: (name: String, fcn: String) -> Unit
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+data class RecipientQrResult(
+    val name: String,
+    val fcn: String
+)
 
-    var hasCameraPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        )
+object RecipientQrParser {
+
+    fun parse(rawValue: String): RecipientQrResult? {
+        val raw = rawValue.trim()
+
+        if (raw.isBlank()) return null
+
+        // 1. JSON
+        parseJson(raw)?.let { return it }
+
+        // 2. Labelled text
+        parseLabelled(raw)?.let { return it }
+
+        // 3. Delimited text
+        parseDelimited(raw)?.let { return it }
+
+        // 4. Simple fallback:
+        //    If the QR contains two or more lines/parts, find an FCN
+        //    and use the nearest text value as the recipient name.
+        parseFlexible(raw)?.let { return it }
+
+        return null
     }
 
-    var errorMessage by remember { mutableStateOf<String?>(null) }
+    private fun parseJson(raw: String): RecipientQrResult? {
+        if (!raw.trimStart().startsWith("{")) return null
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasCameraPermission = granted
-        if (!granted) {
-            errorMessage = "Camera permission is required to scan a QR code."
-        }
-    }
+        return runCatching {
+            val json = JSONObject(raw)
 
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
+            val name = firstJsonValue(
+                json,
+                "name",
+                "recipientName",
+                "recipient_name",
+                "recipient",
+                "Recipient Name"
+            )
 
-    if (!hasCameraPermission) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Card(modifier = Modifier.padding(24.dp)) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.QrCodeScanner,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = errorMessage ?: "Camera permission is required.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(onClick = {
-                        permissionLauncher.launch(Manifest.permission.CAMERA)
-                    }) {
-                        Text("Allow Camera")
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Button(onClick = onBack) {
-                        Text("Cancel")
-                    }
-                }
-            }
-        }
-        return
-    }
+            val fcn = firstJsonValue(
+                json,
+                "fcn",
+                "fcnNumber",
+                "recipientFcn",
+                "recipient_fcn",
+                "recipientFCN",
+                "FCN",
+                "FCN Number",
+                "Recipient FCN"
+            )
 
-    val scanLock = remember { AtomicBoolean(true) }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back"
+            if (name.isNullOrBlank() || fcn.isNullOrBlank()) {
+                null
+            } else {
+                RecipientQrResult(
+                    name = name.trim(),
+                    fcn = fcn.trim()
                 )
             }
-            Text(
-                text = "Scan Recipient QR Code",
-                style = MaterialTheme.typography.titleLarge
+        }.getOrNull()
+    }
+
+    private fun parseLabelled(raw: String): RecipientQrResult? {
+
+        val nameRegex = Regex(
+            pattern = "(?im)" +
+                "(?:recipient\\s*name|beneficiary\\s*name|name)" +
+                "\\s*[:=]\\s*([^\\r\\n;|,]+)"
+        )
+
+        val fcnRegex = Regex(
+            pattern = "(?im)" +
+                "(?:recipient\\s*fcn(?:\\s*number)?|" +
+                "beneficiary\\s*fcn(?:\\s*number)?|" +
+                "fcn(?:\\s*number)?)" +
+                "\\s*[:=]\\s*([A-Za-z0-9_-]+)"
+        )
+
+        val name = nameRegex
+            .find(raw)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        val fcn = fcnRegex
+            .find(raw)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+
+        return if (
+            !name.isNullOrBlank() &&
+            !fcn.isNullOrBlank()
+        ) {
+            RecipientQrResult(
+                name = name,
+                fcn = fcn
             )
+        } else {
+            null
+        }
+    }
+
+    private fun parseDelimited(raw: String): RecipientQrResult? {
+
+        val parts = raw
+            .split(';', '|', '\n', '\r', ',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        if (parts.size < 2) return null
+
+        val fcnCandidates = parts.filter { isPossibleFcn(it) }
+
+        if (fcnCandidates.isEmpty()) return null
+
+        val fcn = fcnCandidates.first()
+        val fcnIndex = parts.indexOf(fcn)
+
+        val nearby = listOfNotNull(
+            parts.getOrNull(fcnIndex - 1),
+            parts.getOrNull(fcnIndex + 1)
+        )
+
+        val name = nearby.firstOrNull {
+            isPossibleName(it)
         }
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    val previewView = PreviewView(ctx)
-                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                    val scanner = BarcodeScanning.getClient()
-                    val executor = Executors.newSingleThreadExecutor()
-
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-
-                        val preview = Preview.Builder()
-                            .build()
-                            .also { it.surfaceProvider = previewView.surfaceProvider }
-
-                        val analysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
-
-                        analysis.setAnalyzer(executor) { imageProxy ->
-                            val mediaImage = imageProxy.image
-                            if (mediaImage == null || !scanLock.get()) {
-                                imageProxy.close()
-                                return@setAnalyzer
-                            }
-
-                            val image = InputImage.fromMediaImage(
-                                mediaImage,
-                                imageProxy.imageInfo.rotationDegrees
-                            )
-
-                            scanner.process(image)
-                                .addOnSuccessListener { barcodes ->
-                                    if (!scanLock.get()) return@addOnSuccessListener
-
-                                    val qr = barcodes.firstOrNull {
-                                        it.format == Barcode.FORMAT_QR_CODE
-                                    } ?: return@addOnSuccessListener
-
-                                    val rawValue = qr.rawValue ?: return@addOnSuccessListener
-                                    val result = RecipientQrParser.parse(rawValue)
-
-                                    if (result != null && scanLock.compareAndSet(true, false)) {
-                                        onRecipientScanned(result.name, result.fcn)
-                                    }
-                                }
-                                .addOnFailureListener {
-                                    // Keep scanning. Transient frame failures are normal.
-                                }
-                                .addOnCompleteListener {
-                                    imageProxy.close()
-                                }
-                        }
-
-                        try {
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                analysis
-                            )
-                        } catch (e: Exception) {
-                            errorMessage = "Unable to start camera."
-                        }
-                    }, ContextCompat.getMainExecutor(ctx))
-
-                    previewView
-                },
-                update = {}
+        return if (!name.isNullOrBlank()) {
+            RecipientQrResult(
+                name = name,
+                fcn = fcn
             )
+        } else {
+            null
+        }
+    }
 
-            // Simple visual scanning guide. It does not alter the camera feed.
-            Box(
-                modifier = Modifier
-                    .size(260.dp)
-                    .align(Alignment.Center)
-                    .background(
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-                        shape = RoundedCornerShape(20.dp)
-                    )
+    private fun parseFlexible(raw: String): RecipientQrResult? {
+
+        val parts = raw
+            .split(
+                ';',
+                '|',
+                '\n',
+                '\r',
+                ',',
+                '\t'
             )
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
 
-            Card(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Place the recipient QR code inside the frame",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    if (errorMessage != null) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = errorMessage!!,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
+        if (parts.size < 2) return null
+
+        var fcnIndex = -1
+        var fcnValue: String? = null
+
+        for (index in parts.indices) {
+            val cleaned = parts[index]
+                .replace(
+                    Regex(
+                        "(?i)^(recipient\\s*)?fcn(\\s*number)?\\s*[:=]\\s*"
+                    ),
+                    ""
+                )
+                .trim()
+
+            if (isPossibleFcn(cleaned)) {
+                fcnIndex = index
+                fcnValue = cleaned
+                break
+            }
+        }
+
+        if (fcnIndex == -1 || fcnValue.isNullOrBlank()) {
+            return null
+        }
+
+        val possibleNames = listOfNotNull(
+            parts.getOrNull(fcnIndex - 1),
+            parts.getOrNull(fcnIndex + 1),
+            parts.getOrNull(fcnIndex - 2),
+            parts.getOrNull(fcnIndex + 2)
+        )
+
+        val name = possibleNames.firstOrNull {
+            isPossibleName(it)
+        }
+
+        return if (!name.isNullOrBlank()) {
+            RecipientQrResult(
+                name = name,
+                fcn = fcnValue
+            )
+        } else {
+            null
+        }
+    }
+
+    private fun isPossibleFcn(value: String): Boolean {
+        val cleaned = value
+            .trim()
+            .replace(
+                Regex(
+                    "(?i)^(recipient\\s*)?fcn(\\s*number)?\\s*[:=]\\s*"
+                ),
+                ""
+            )
+            .trim()
+
+        // Normal FCN: 4–12 digits
+        if (cleaned.matches(Regex("\\d{4,12}"))) {
+            return true
+        }
+
+        // Also allow FCNs containing letters, hyphens or underscores.
+        // This makes the scanner compatible with existing identifiers
+        // such as FCN-12345 or ABC12345.
+        return cleaned.matches(
+            Regex("[A-Za-z0-9_-]{4,20}")
+        ) && cleaned.any { it.isDigit() }
+    }
+
+    private fun isPossibleName(value: String): Boolean {
+
+        val candidate = value
+            .trim()
+            .replace(
+                Regex(
+                    "(?i)^(recipient\\s*name|beneficiary\\s*name|name)\\s*[:=]\\s*"
+                ),
+                ""
+            )
+            .trim()
+
+        if (candidate.length < 2) return false
+
+        if (candidate.matches(Regex("\\d+"))) {
+            return false
+        }
+
+        if (candidate.contains("=")) return false
+        if (candidate.contains(":")) return false
+
+        return true
+    }
+
+    private fun firstJsonValue(
+        json: JSONObject,
+        vararg keys: String
+    ): String? {
+
+        keys.forEach { key ->
+
+            if (json.has(key) && !json.isNull(key)) {
+
+                val value = json
+                    .optString(key)
+                    .trim()
+
+                if (value.isNotBlank()) {
+                    return value
                 }
             }
         }
+
+        return null
     }
 }
