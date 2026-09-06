@@ -1,7 +1,5 @@
 package com.example.data.qr
 
-import org.json.JSONObject
-
 data class RecipientQrResult(
     val name: String,
     val fcn: String
@@ -12,42 +10,96 @@ object RecipientQrParser {
     fun parse(rawValue: String): RecipientQrResult? {
         val raw = rawValue.trim()
 
-        if (raw.isBlank()) return null
+        if (raw.isBlank()) {
+            return null
+        }
 
-        // 1. JSON
-        parseJson(raw)?.let { return it }
+        // ---------------------------------------------------------
+        // Exact Rohingya/recipient QR format:
+        //
+        // STJ-19C16172;
+        // P57-00005892;
+        // 600884;
+        // Shobi Alam;
+        // Male;
+        // 01/01/2001;
+        // Myanmar:...;
+        // 1;
+        // 1;
+        // 1012
+        //
+        // FCN = field 3  -> index 2
+        // Name = field 4 -> index 3
+        // ---------------------------------------------------------
 
-        // 2. Labelled text
-        parseLabelled(raw)?.let { return it }
+        val fields = raw
+            .split(";")
+            .map { it.trim() }
 
-        // 3. Delimited text
-        parseDelimited(raw)?.let { return it }
+        if (fields.size >= 4) {
 
-        // 4. Simple fallback:
-        //    If the QR contains two or more lines/parts, find an FCN
-        //    and use the nearest text value as the recipient name.
-        parseFlexible(raw)?.let { return it }
+            val fcn = fields[2]
+            val name = fields[3]
+
+            // FCN in this QR format is numeric.
+            if (
+                fcn.matches(Regex("\\d{4,12}")) &&
+                name.isNotBlank()
+            ) {
+                return RecipientQrResult(
+                    name = name,
+                    fcn = fcn
+                )
+            }
+        }
+
+        // ---------------------------------------------------------
+        // JSON fallback
+        // ---------------------------------------------------------
+
+        parseJson(raw)?.let {
+            return it
+        }
+
+        // ---------------------------------------------------------
+        // Labelled text fallback
+        // Example:
+        //
+        // Recipient Name: Shobi Alam
+        // FCN: 600884
+        // ---------------------------------------------------------
+
+        parseLabelled(raw)?.let {
+            return it
+        }
+
+        // ---------------------------------------------------------
+        // Generic fallback
+        // ---------------------------------------------------------
+
+        parseGeneric(raw)?.let {
+            return it
+        }
 
         return null
     }
 
     private fun parseJson(raw: String): RecipientQrResult? {
-        if (!raw.trimStart().startsWith("{")) return null
+        if (!raw.trimStart().startsWith("{")) {
+            return null
+        }
 
-        return runCatching {
-            val json = JSONObject(raw)
+        return try {
+            val json = org.json.JSONObject(raw)
 
-            val name = firstJsonValue(
-                json,
+            val nameKeys = listOf(
                 "name",
                 "recipientName",
                 "recipient_name",
-                "recipient",
                 "Recipient Name"
             )
 
-            val fcn = firstJsonValue(
-                json,
+            val fcnKeys = listOf(
                 "fcn",
                 "fcnNumber",
                 "recipientFcn",
@@ -58,31 +110,60 @@ object RecipientQrParser {
                 "Recipient FCN"
             )
 
-            if (name.isNullOrBlank() || fcn.isNullOrBlank()) {
-                null
-            } else {
-                RecipientQrResult(
-                    name = name.trim(),
-                    fcn = fcn.trim()
-                )
+            var name: String? = null
+            var fcn: String? = null
+
+            for (key in nameKeys) {
+                if (json.has(key)) {
+                    val value = json.optString(key).trim()
+
+                    if (value.isNotBlank()) {
+                        name = value
+                        break
+                    }
+                }
             }
-        }.getOrNull()
+
+            for (key in fcnKeys) {
+                if (json.has(key)) {
+                    val value = json.optString(key).trim()
+
+                    if (
+                        value.matches(
+                            Regex("\\d{4,12}")
+                        )
+                    ) {
+                        fcn = value
+                        break
+                    }
+                }
+            }
+
+            if (
+                !name.isNullOrBlank() &&
+                !fcn.isNullOrBlank()
+            ) {
+                RecipientQrResult(
+                    name = name,
+                    fcn = fcn
+                )
+            } else {
+                null
+            }
+
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun parseLabelled(raw: String): RecipientQrResult? {
 
         val nameRegex = Regex(
-            pattern = "(?im)" +
-                "(?:recipient\\s*name|beneficiary\\s*name|name)" +
-                "\\s*[:=]\\s*([^\\r\\n;|,]+)"
+            pattern = "(?im)^\\s*(?:recipient\\s+name|name)\\s*[:=]\\s*(.+?)\\s*$"
         )
 
         val fcnRegex = Regex(
-            pattern = "(?im)" +
-                "(?:recipient\\s*fcn(?:\\s*number)?|" +
-                "beneficiary\\s*fcn(?:\\s*number)?|" +
-                "fcn(?:\\s*number)?)" +
-                "\\s*[:=]\\s*([A-Za-z0-9_-]+)"
+            pattern = "(?im)^\\s*(?:recipient\\s+fcn(?:\\s+number)?|fcn(?:\\s+number)?)\\s*[:=]\\s*(\\d{4,12})\\s*$"
         )
 
         val name = nameRegex
@@ -110,166 +191,53 @@ object RecipientQrParser {
         }
     }
 
-    private fun parseDelimited(raw: String): RecipientQrResult? {
-
-        val parts = raw
-            .split(';', '|', '\n', '\r', ',')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        if (parts.size < 2) return null
-
-        val fcnCandidates = parts.filter { isPossibleFcn(it) }
-
-        if (fcnCandidates.isEmpty()) return null
-
-        val fcn = fcnCandidates.first()
-        val fcnIndex = parts.indexOf(fcn)
-
-        val nearby = listOfNotNull(
-            parts.getOrNull(fcnIndex - 1),
-            parts.getOrNull(fcnIndex + 1)
-        )
-
-        val name = nearby.firstOrNull {
-            isPossibleName(it)
-        }
-
-        return if (!name.isNullOrBlank()) {
-            RecipientQrResult(
-                name = name,
-                fcn = fcn
-            )
-        } else {
-            null
-        }
-    }
-
-    private fun parseFlexible(raw: String): RecipientQrResult? {
+    private fun parseGeneric(raw: String): RecipientQrResult? {
 
         val parts = raw
             .split(
-                ';',
-                '|',
-                '\n',
-                '\r',
-                ',',
-                '\t'
+                ";",
+                "|",
+                "\n",
+                "\r",
+                ","
             )
             .map { it.trim() }
             .filter { it.isNotBlank() }
 
-        if (parts.size < 2) return null
-
-        var fcnIndex = -1
-        var fcnValue: String? = null
-
-        for (index in parts.indices) {
-            val cleaned = parts[index]
-                .replace(
-                    Regex(
-                        "(?i)^(recipient\\s*)?fcn(\\s*number)?\\s*[:=]\\s*"
-                    ),
-                    ""
-                )
-                .trim()
-
-            if (isPossibleFcn(cleaned)) {
-                fcnIndex = index
-                fcnValue = cleaned
-                break
-            }
+        val fcnIndex = parts.indexOfFirst {
+            it.matches(Regex("\\d{4,12}"))
         }
 
-        if (fcnIndex == -1 || fcnValue.isNullOrBlank()) {
+        if (fcnIndex < 0) {
             return null
         }
 
-        val possibleNames = listOfNotNull(
-            parts.getOrNull(fcnIndex - 1),
-            parts.getOrNull(fcnIndex + 1),
-            parts.getOrNull(fcnIndex - 2),
-            parts.getOrNull(fcnIndex + 2)
+        val fcn = parts[fcnIndex]
+
+        // Prefer a nearby text value as the name.
+        val possibleNameIndexes = listOf(
+            fcnIndex + 1,
+            fcnIndex - 1
         )
 
-        val name = possibleNames.firstOrNull {
-            isPossibleName(it)
-        }
+        for (index in possibleNameIndexes) {
 
-        return if (!name.isNullOrBlank()) {
-            RecipientQrResult(
-                name = name,
-                fcn = fcnValue
-            )
-        } else {
-            null
-        }
-    }
+            if (index !in parts.indices) {
+                continue
+            }
 
-    private fun isPossibleFcn(value: String): Boolean {
-        val cleaned = value
-            .trim()
-            .replace(
-                Regex(
-                    "(?i)^(recipient\\s*)?fcn(\\s*number)?\\s*[:=]\\s*"
-                ),
-                ""
-            )
-            .trim()
+            val candidate = parts[index]
 
-        // Normal FCN: 4–12 digits
-        if (cleaned.matches(Regex("\\d{4,12}"))) {
-            return true
-        }
-
-        // Also allow FCNs containing letters, hyphens or underscores.
-        // This makes the scanner compatible with existing identifiers
-        // such as FCN-12345 or ABC12345.
-        return cleaned.matches(
-            Regex("[A-Za-z0-9_-]{4,20}")
-        ) && cleaned.any { it.isDigit() }
-    }
-
-    private fun isPossibleName(value: String): Boolean {
-
-        val candidate = value
-            .trim()
-            .replace(
-                Regex(
-                    "(?i)^(recipient\\s*name|beneficiary\\s*name|name)\\s*[:=]\\s*"
-                ),
-                ""
-            )
-            .trim()
-
-        if (candidate.length < 2) return false
-
-        if (candidate.matches(Regex("\\d+"))) {
-            return false
-        }
-
-        if (candidate.contains("=")) return false
-        if (candidate.contains(":")) return false
-
-        return true
-    }
-
-    private fun firstJsonValue(
-        json: JSONObject,
-        vararg keys: String
-    ): String? {
-
-        keys.forEach { key ->
-
-            if (json.has(key) && !json.isNull(key)) {
-
-                val value = json
-                    .optString(key)
-                    .trim()
-
-                if (value.isNotBlank()) {
-                    return value
-                }
+            if (
+                candidate.isNotBlank() &&
+                !candidate.matches(Regex("\\d{4,12}")) &&
+                !candidate.matches(Regex("(?i)male|female")) &&
+                !candidate.matches(Regex("\\d{1,2}/\\d{1,2}/\\d{2,4}"))
+            ) {
+                return RecipientQrResult(
+                    name = candidate,
+                    fcn = fcn
+                )
             }
         }
 
