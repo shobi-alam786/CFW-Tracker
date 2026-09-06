@@ -35,6 +35,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,11 +48,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.example.data.qr.RecipientQrParser
-import com.google.mlkit.vision.barcode.Barcode
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -60,7 +62,6 @@ fun RecipientQrScannerScreen(
     onRecipientScanned: (name: String, fcn: String) -> Unit,
     onClose: () -> Unit
 ) {
-
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -77,32 +78,43 @@ fun RecipientQrScannerScreen(
         mutableStateOf("Point the camera at a recipient QR code")
     }
 
-    var detectedRawValue by remember {
-        mutableStateOf<String?>(null)
-    }
-
     var errorMessage by remember {
         mutableStateOf<String?>(null)
-    }
-
-    var cameraStarted by remember {
-        mutableStateOf(false)
     }
 
     val scanLock = remember {
         AtomicBoolean(false)
     }
 
+    val cameraExecutor = remember {
+        Executors.newSingleThreadExecutor()
+    }
+
+    val barcodeScanner = remember {
+        BarcodeScanning.getClient()
+    }
+
+    var cameraProvider by remember {
+        mutableStateOf<ProcessCameraProvider?>(null)
+    }
+
     val cameraPermissionLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission()
         ) { granted ->
+
             hasCameraPermission = granted
 
             if (!granted) {
-                errorMessage = "Camera permission is required to scan QR codes."
+                errorMessage =
+                    "Camera permission is required to scan QR codes."
+
+                scannerStatus =
+                    "Camera permission denied."
             } else {
                 errorMessage = null
+                scannerStatus =
+                    "Starting camera..."
             }
         }
 
@@ -111,6 +123,17 @@ fun RecipientQrScannerScreen(
             cameraPermissionLauncher.launch(
                 Manifest.permission.CAMERA
             )
+        }
+    }
+
+    /*
+     * Clean up CameraX and ML Kit when this screen leaves composition.
+     */
+    DisposableEffect(Unit) {
+        onDispose {
+            cameraProvider?.unbindAll()
+            barcodeScanner.close()
+            cameraExecutor.shutdown()
         }
     }
 
@@ -183,10 +206,11 @@ fun RecipientQrScannerScreen(
         }
 
         /*
-         * Camera preview + ML Kit analyzer
+         * Camera preview.
          */
-        androidx.compose.ui.viewinterop.AndroidView(
+        AndroidView(
             modifier = Modifier.fillMaxSize(),
+
             factory = { ctx ->
 
                 val previewView = PreviewView(ctx)
@@ -197,18 +221,14 @@ fun RecipientQrScannerScreen(
                 val cameraProviderFuture =
                     ProcessCameraProvider.getInstance(ctx)
 
-                val cameraExecutor =
-                    Executors.newSingleThreadExecutor()
-
-                val barcodeScanner =
-                    BarcodeScanning.getClient()
-
                 cameraProviderFuture.addListener({
 
                     try {
 
-                        val cameraProvider =
+                        val provider =
                             cameraProviderFuture.get()
+
+                        cameraProvider = provider
 
                         val preview =
                             Preview.Builder()
@@ -236,12 +256,14 @@ fun RecipientQrScannerScreen(
                                 return@setAnalyzer
                             }
 
-                            val image = InputImage.fromMediaImage(
-                                mediaImage,
-                                imageProxy.imageInfo.rotationDegrees
-                            )
+                            val inputImage =
+                                InputImage.fromMediaImage(
+                                    mediaImage,
+                                    imageProxy.imageInfo.rotationDegrees
+                                )
 
-                            barcodeScanner.process(image)
+                            barcodeScanner
+                                .process(inputImage)
                                 .addOnSuccessListener { barcodes ->
 
                                     if (barcodes.isEmpty()) {
@@ -249,20 +271,24 @@ fun RecipientQrScannerScreen(
                                     }
 
                                     /*
-                                     * ML Kit has detected at least one barcode.
+                                     * QR format value used by ML Kit.
+                                     *
+                                     * QR_CODE = 256
+                                     *
+                                     * We intentionally avoid importing
+                                     * Barcode to prevent the unresolved
+                                     * Barcode reference.
                                      */
-                                    scannerStatus =
-                                        "QR code detected — reading recipient information..."
-
                                     val qrBarcode =
                                         barcodes.firstOrNull {
-                                            it.format ==
-                                                Barcode.FORMAT_QR_CODE
+                                            it.format == 256
                                         }
 
                                     if (qrBarcode == null) {
+
                                         scannerStatus =
-                                            "A barcode was detected, but it is not a QR code."
+                                            "Barcode detected. Please show a QR code."
+
                                         return@addOnSuccessListener
                                     }
 
@@ -271,15 +297,18 @@ fun RecipientQrScannerScreen(
                                             ?.trim()
 
                                     if (rawValue.isNullOrBlank()) {
+
                                         scannerStatus =
-                                            "QR code detected, but it contains no readable data."
+                                            "QR code detected, but no data could be read."
+
                                         return@addOnSuccessListener
                                     }
 
-                                    detectedRawValue = rawValue
+                                    scannerStatus =
+                                        "QR code detected — reading recipient information..."
 
                                     /*
-                                     * Parse recipient information.
+                                     * Parse recipient data.
                                      */
                                     val result =
                                         RecipientQrParser.parse(
@@ -295,7 +324,7 @@ fun RecipientQrScannerScreen(
                                     }
 
                                     /*
-                                     * Prevent multiple callbacks.
+                                     * Prevent duplicate scans.
                                      */
                                     if (
                                         scanLock.compareAndSet(
@@ -327,23 +356,21 @@ fun RecipientQrScannerScreen(
                                 }
                         }
 
-                        cameraProvider.unbindAll()
+                        provider.unbindAll()
 
-                        cameraProvider.bindToLifecycle(
+                        provider.bindToLifecycle(
                             lifecycleOwner,
                             CameraSelector.DEFAULT_BACK_CAMERA,
                             preview,
                             imageAnalysis
                         )
 
-                        cameraStarted = true
-                        errorMessage = null
                         scannerStatus =
                             "Camera ready — point at the recipient QR code."
 
-                    } catch (exception: Exception) {
+                        errorMessage = null
 
-                        cameraStarted = false
+                    } catch (exception: Exception) {
 
                         errorMessage =
                             "Unable to start camera: ${
@@ -353,45 +380,16 @@ fun RecipientQrScannerScreen(
 
                         scannerStatus =
                             "Camera could not be started."
-
                     }
 
                 }, ContextCompat.getMainExecutor(ctx))
-
-                /*
-                 * Store cleanup objects on the PreviewView.
-                 */
-                previewView.addOnAttachStateChangeListener(
-                    object :
-                        android.view.View.OnAttachStateChangeListener {
-
-                        override fun onViewAttachedToWindow(
-                            v: android.view.View
-                        ) {
-                        }
-
-                        override fun onViewDetachedFromWindow(
-                            v: android.view.View
-                        ) {
-
-                            try {
-                                cameraProviderFuture.get()
-                                    .unbindAll()
-                            } catch (_: Exception) {
-                            }
-
-                            barcodeScanner.close()
-                            cameraExecutor.shutdown()
-                        }
-                    }
-                )
 
                 previewView
             }
         )
 
         /*
-         * Dark overlay to make scanner UI easier to see.
+         * Scanner overlay.
          */
         Box(
             modifier = Modifier
@@ -424,40 +422,40 @@ fun RecipientQrScannerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp)
+                    .padding(
+                        horizontal = 8.dp,
+                        vertical = 4.dp
+                    ),
+                contentAlignment = Alignment.CenterStart
             ) {
+
+                IconButton(
+                    onClick = onClose
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close scanner"
+                    )
+                }
 
                 Text(
                     text = "Scan Recipient QR",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(
-                        Alignment.Center
-                    )
+                    modifier = Modifier.padding(
+                        start = 48.dp
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
                 )
-
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.align(
-                        Alignment.CenterEnd
-                    )
-                ) {
-
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close"
-                    )
-                }
             }
         }
 
         /*
-         * Scanner frame.
+         * QR scanning frame.
          */
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
-                .size(270.dp)
+                .size(260.dp)
                 .border(
                     width = 3.dp,
                     color = MaterialTheme.colorScheme.primary,
@@ -466,46 +464,36 @@ fun RecipientQrScannerScreen(
         )
 
         /*
-         * Status card.
+         * Bottom status card.
          */
         Card(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .padding(16.dp),
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(
                 containerColor =
                     MaterialTheme.colorScheme.surface.copy(
-                        alpha = 0.96f
+                        alpha = 0.95f
                     )
             )
         ) {
 
             Column(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
 
-                val statusIcon =
-                    when {
-                        scannerStatus.startsWith(
-                            "Recipient found"
-                        ) -> Icons.Default.CheckCircle
-
-                        scannerStatus.startsWith(
-                            "QR detected"
-                        ) -> Icons.Default.QrCodeScanner
-
-                        errorMessage != null ->
-                            Icons.Default.ErrorOutline
-
-                        else ->
-                            Icons.Default.QrCodeScanner
-                    }
-
                 Icon(
-                    imageVector = statusIcon,
+                    imageVector =
+                        if (scanLock.get()) {
+                            Icons.Default.CheckCircle
+                        } else {
+                            Icons.Default.QrCodeScanner
+                        },
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(32.dp)
@@ -524,30 +512,25 @@ fun RecipientQrScannerScreen(
                 if (errorMessage != null) {
 
                     Spacer(
-                        modifier = Modifier.height(6.dp)
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    Icon(
+                        imageVector =
+                            Icons.Default.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp)
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(4.dp)
                     )
 
                     Text(
                         text = errorMessage!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-
-                /*
-                 * This is intentionally visible while testing.
-                 * It proves whether ML Kit actually received QR data.
-                 */
-                if (!detectedRawValue.isNullOrBlank()) {
-
-                    Spacer(
-                        modifier = Modifier.height(8.dp)
-                    )
-
-                    Text(
-                        text = "QR data detected",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
 
@@ -556,13 +539,8 @@ fun RecipientQrScannerScreen(
                 )
 
                 Text(
-                    text = if (cameraStarted) {
-                        "Place the recipient QR code inside the frame."
-                    } else {
-                        "Starting camera..."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = "Place the recipient QR code inside the frame",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
