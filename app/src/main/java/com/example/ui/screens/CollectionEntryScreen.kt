@@ -751,7 +751,7 @@ fun DispatchMaterialsTab(
 
     if (showRecipientQrScanner) {
         RecipientQrScannerScreen(
-            onBack = {
+            onClose = {
                 showRecipientQrScanner = false
             },
             onRecipientScanned = { name, fcn ->
