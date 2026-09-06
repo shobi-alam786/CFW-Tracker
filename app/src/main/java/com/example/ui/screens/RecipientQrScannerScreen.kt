@@ -1,278 +1,570 @@
-package com.example.data.qr
+package com.example.ui.screens
 
-import org.json.JSONObject
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.example.data.qr.RecipientQrParser
+import com.google.mlkit.vision.barcode.Barcode
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
-data class RecipientQrResult(
-    val name: String,
-    val fcn: String
-)
+@Composable
+fun RecipientQrScannerScreen(
+    onRecipientScanned: (name: String, fcn: String) -> Unit,
+    onClose: () -> Unit
+) {
 
-object RecipientQrParser {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    fun parse(rawValue: String): RecipientQrResult? {
-        val raw = rawValue.trim()
-
-        if (raw.isBlank()) return null
-
-        // 1. JSON
-        parseJson(raw)?.let { return it }
-
-        // 2. Labelled text
-        parseLabelled(raw)?.let { return it }
-
-        // 3. Delimited text
-        parseDelimited(raw)?.let { return it }
-
-        // 4. Simple fallback:
-        //    If the QR contains two or more lines/parts, find an FCN
-        //    and use the nearest text value as the recipient name.
-        parseFlexible(raw)?.let { return it }
-
-        return null
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        )
     }
 
-    private fun parseJson(raw: String): RecipientQrResult? {
-        if (!raw.trimStart().startsWith("{")) return null
+    var scannerStatus by remember {
+        mutableStateOf("Point the camera at a recipient QR code")
+    }
 
-        return runCatching {
-            val json = JSONObject(raw)
+    var detectedRawValue by remember {
+        mutableStateOf<String?>(null)
+    }
 
-            val name = firstJsonValue(
-                json,
-                "name",
-                "recipientName",
-                "recipient_name",
-                "recipient",
-                "Recipient Name"
-            )
+    var errorMessage by remember {
+        mutableStateOf<String?>(null)
+    }
 
-            val fcn = firstJsonValue(
-                json,
-                "fcn",
-                "fcnNumber",
-                "recipientFcn",
-                "recipient_fcn",
-                "recipientFCN",
-                "FCN",
-                "FCN Number",
-                "Recipient FCN"
-            )
+    var cameraStarted by remember {
+        mutableStateOf(false)
+    }
 
-            if (name.isNullOrBlank() || fcn.isNullOrBlank()) {
-                null
+    val scanLock = remember {
+        AtomicBoolean(false)
+    }
+
+    val cameraPermissionLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            hasCameraPermission = granted
+
+            if (!granted) {
+                errorMessage = "Camera permission is required to scan QR codes."
             } else {
-                RecipientQrResult(
-                    name = name.trim(),
-                    fcn = fcn.trim()
-                )
+                errorMessage = null
             }
-        }.getOrNull()
+        }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            cameraPermissionLauncher.launch(
+                Manifest.permission.CAMERA
+            )
+        }
     }
 
-    private fun parseLabelled(raw: String): RecipientQrResult? {
+    Box(
+        modifier = Modifier.fillMaxSize()
+    ) {
 
-        val nameRegex = Regex(
-            pattern = "(?im)" +
-                "(?:recipient\\s*name|beneficiary\\s*name|name)" +
-                "\\s*[:=]\\s*([^\\r\\n;|,]+)"
+        if (!hasCameraPermission) {
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+
+                Icon(
+                    imageVector = Icons.Default.CameraAlt,
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                Text(
+                    text = "Camera Permission Required",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                Text(
+                    text = errorMessage
+                        ?: "Allow camera access to scan the recipient QR code."
+                )
+
+                Spacer(
+                    modifier = Modifier.height(20.dp)
+                )
+
+                Button(
+                    onClick = {
+                        cameraPermissionLauncher.launch(
+                            Manifest.permission.CAMERA
+                        )
+                    }
+                ) {
+                    Text("Allow Camera")
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                Button(
+                    onClick = onClose
+                ) {
+                    Text("Close")
+                }
+            }
+
+            return@Box
+        }
+
+        /*
+         * Camera preview + ML Kit analyzer
+         */
+        androidx.compose.ui.viewinterop.AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+
+                val previewView = PreviewView(ctx)
+
+                previewView.scaleType =
+                    PreviewView.ScaleType.FILL_CENTER
+
+                val cameraProviderFuture =
+                    ProcessCameraProvider.getInstance(ctx)
+
+                val cameraExecutor =
+                    Executors.newSingleThreadExecutor()
+
+                val barcodeScanner =
+                    BarcodeScanning.getClient()
+
+                cameraProviderFuture.addListener({
+
+                    try {
+
+                        val cameraProvider =
+                            cameraProviderFuture.get()
+
+                        val preview =
+                            Preview.Builder()
+                                .build()
+
+                        preview.surfaceProvider =
+                            previewView.surfaceProvider
+
+                        val imageAnalysis =
+                            ImageAnalysis.Builder()
+                                .setBackpressureStrategy(
+                                    ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
+                                )
+                                .build()
+
+                        imageAnalysis.setAnalyzer(
+                            cameraExecutor
+                        ) { imageProxy ->
+
+                            val mediaImage =
+                                imageProxy.image
+
+                            if (mediaImage == null) {
+                                imageProxy.close()
+                                return@setAnalyzer
+                            }
+
+                            val image = InputImage.fromMediaImage(
+                                mediaImage,
+                                imageProxy.imageInfo.rotationDegrees
+                            )
+
+                            barcodeScanner.process(image)
+                                .addOnSuccessListener { barcodes ->
+
+                                    if (barcodes.isEmpty()) {
+                                        return@addOnSuccessListener
+                                    }
+
+                                    /*
+                                     * ML Kit has detected at least one barcode.
+                                     */
+                                    scannerStatus =
+                                        "QR code detected — reading recipient information..."
+
+                                    val qrBarcode =
+                                        barcodes.firstOrNull {
+                                            it.format ==
+                                                Barcode.FORMAT_QR_CODE
+                                        }
+
+                                    if (qrBarcode == null) {
+                                        scannerStatus =
+                                            "A barcode was detected, but it is not a QR code."
+                                        return@addOnSuccessListener
+                                    }
+
+                                    val rawValue =
+                                        qrBarcode.rawValue
+                                            ?.trim()
+
+                                    if (rawValue.isNullOrBlank()) {
+                                        scannerStatus =
+                                            "QR code detected, but it contains no readable data."
+                                        return@addOnSuccessListener
+                                    }
+
+                                    detectedRawValue = rawValue
+
+                                    /*
+                                     * Parse recipient information.
+                                     */
+                                    val result =
+                                        RecipientQrParser.parse(
+                                            rawValue
+                                        )
+
+                                    if (result == null) {
+
+                                        scannerStatus =
+                                            "QR detected, but recipient information was not recognized."
+
+                                        return@addOnSuccessListener
+                                    }
+
+                                    /*
+                                     * Prevent multiple callbacks.
+                                     */
+                                    if (
+                                        scanLock.compareAndSet(
+                                            false,
+                                            true
+                                        )
+                                    ) {
+
+                                        scannerStatus =
+                                            "Recipient found: ${result.name}"
+
+                                        onRecipientScanned(
+                                            result.name,
+                                            result.fcn
+                                        )
+                                    }
+                                }
+                                .addOnFailureListener { exception ->
+
+                                    scannerStatus =
+                                        "QR scanning error: ${
+                                            exception.message
+                                                ?: "Unknown error"
+                                        }"
+                                }
+                                .addOnCompleteListener {
+
+                                    imageProxy.close()
+                                }
+                        }
+
+                        cameraProvider.unbindAll()
+
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview,
+                            imageAnalysis
+                        )
+
+                        cameraStarted = true
+                        errorMessage = null
+                        scannerStatus =
+                            "Camera ready — point at the recipient QR code."
+
+                    } catch (exception: Exception) {
+
+                        cameraStarted = false
+
+                        errorMessage =
+                            "Unable to start camera: ${
+                                exception.message
+                                    ?: "Unknown error"
+                            }"
+
+                        scannerStatus =
+                            "Camera could not be started."
+
+                    }
+
+                }, ContextCompat.getMainExecutor(ctx))
+
+                /*
+                 * Store cleanup objects on the PreviewView.
+                 */
+                previewView.addOnAttachStateChangeListener(
+                    object :
+                        android.view.View.OnAttachStateChangeListener {
+
+                        override fun onViewAttachedToWindow(
+                            v: android.view.View
+                        ) {
+                        }
+
+                        override fun onViewDetachedFromWindow(
+                            v: android.view.View
+                        ) {
+
+                            try {
+                                cameraProviderFuture.get()
+                                    .unbindAll()
+                            } catch (_: Exception) {
+                            }
+
+                            barcodeScanner.close()
+                            cameraExecutor.shutdown()
+                        }
+                    }
+                )
+
+                previewView
+            }
         )
 
-        val fcnRegex = Regex(
-            pattern = "(?im)" +
-                "(?:recipient\\s*fcn(?:\\s*number)?|" +
-                "beneficiary\\s*fcn(?:\\s*number)?|" +
-                "fcn(?:\\s*number)?)" +
-                "\\s*[:=]\\s*([A-Za-z0-9_-]+)"
+        /*
+         * Dark overlay to make scanner UI easier to see.
+         */
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Color.Black.copy(alpha = 0.12f)
+                )
         )
 
-        val name = nameRegex
-            .find(raw)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        val fcn = fcnRegex
-            .find(raw)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-
-        return if (
-            !name.isNullOrBlank() &&
-            !fcn.isNullOrBlank()
+        /*
+         * Top bar.
+         */
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    top = 16.dp,
+                    start = 16.dp,
+                    end = 16.dp
+                ),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor =
+                    MaterialTheme.colorScheme.surface.copy(
+                        alpha = 0.95f
+                    )
+            )
         ) {
-            RecipientQrResult(
-                name = name,
-                fcn = fcn
-            )
-        } else {
-            null
-        }
-    }
 
-    private fun parseDelimited(raw: String): RecipientQrResult? {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
 
-        val parts = raw
-            .split(';', '|', '\n', '\r', ',')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        if (parts.size < 2) return null
-
-        val fcnCandidates = parts.filter { isPossibleFcn(it) }
-
-        if (fcnCandidates.isEmpty()) return null
-
-        val fcn = fcnCandidates.first()
-        val fcnIndex = parts.indexOf(fcn)
-
-        val nearby = listOfNotNull(
-            parts.getOrNull(fcnIndex - 1),
-            parts.getOrNull(fcnIndex + 1)
-        )
-
-        val name = nearby.firstOrNull {
-            isPossibleName(it)
-        }
-
-        return if (!name.isNullOrBlank()) {
-            RecipientQrResult(
-                name = name,
-                fcn = fcn
-            )
-        } else {
-            null
-        }
-    }
-
-    private fun parseFlexible(raw: String): RecipientQrResult? {
-
-        val parts = raw
-            .split(
-                ';',
-                '|',
-                '\n',
-                '\r',
-                ',',
-                '\t'
-            )
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        if (parts.size < 2) return null
-
-        var fcnIndex = -1
-        var fcnValue: String? = null
-
-        for (index in parts.indices) {
-            val cleaned = parts[index]
-                .replace(
-                    Regex(
-                        "(?i)^(recipient\\s*)?fcn(\\s*number)?\\s*[:=]\\s*"
-                    ),
-                    ""
+                Text(
+                    text = "Scan Recipient QR",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(
+                        Alignment.Center
+                    )
                 )
-                .trim()
 
-            if (isPossibleFcn(cleaned)) {
-                fcnIndex = index
-                fcnValue = cleaned
-                break
-            }
-        }
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.align(
+                        Alignment.CenterEnd
+                    )
+                ) {
 
-        if (fcnIndex == -1 || fcnValue.isNullOrBlank()) {
-            return null
-        }
-
-        val possibleNames = listOfNotNull(
-            parts.getOrNull(fcnIndex - 1),
-            parts.getOrNull(fcnIndex + 1),
-            parts.getOrNull(fcnIndex - 2),
-            parts.getOrNull(fcnIndex + 2)
-        )
-
-        val name = possibleNames.firstOrNull {
-            isPossibleName(it)
-        }
-
-        return if (!name.isNullOrBlank()) {
-            RecipientQrResult(
-                name = name,
-                fcn = fcnValue
-            )
-        } else {
-            null
-        }
-    }
-
-    private fun isPossibleFcn(value: String): Boolean {
-        val cleaned = value
-            .trim()
-            .replace(
-                Regex(
-                    "(?i)^(recipient\\s*)?fcn(\\s*number)?\\s*[:=]\\s*"
-                ),
-                ""
-            )
-            .trim()
-
-        // Normal FCN: 4–12 digits
-        if (cleaned.matches(Regex("\\d{4,12}"))) {
-            return true
-        }
-
-        // Also allow FCNs containing letters, hyphens or underscores.
-        // This makes the scanner compatible with existing identifiers
-        // such as FCN-12345 or ABC12345.
-        return cleaned.matches(
-            Regex("[A-Za-z0-9_-]{4,20}")
-        ) && cleaned.any { it.isDigit() }
-    }
-
-    private fun isPossibleName(value: String): Boolean {
-
-        val candidate = value
-            .trim()
-            .replace(
-                Regex(
-                    "(?i)^(recipient\\s*name|beneficiary\\s*name|name)\\s*[:=]\\s*"
-                ),
-                ""
-            )
-            .trim()
-
-        if (candidate.length < 2) return false
-
-        if (candidate.matches(Regex("\\d+"))) {
-            return false
-        }
-
-        if (candidate.contains("=")) return false
-        if (candidate.contains(":")) return false
-
-        return true
-    }
-
-    private fun firstJsonValue(
-        json: JSONObject,
-        vararg keys: String
-    ): String? {
-
-        keys.forEach { key ->
-
-            if (json.has(key) && !json.isNull(key)) {
-
-                val value = json
-                    .optString(key)
-                    .trim()
-
-                if (value.isNotBlank()) {
-                    return value
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close"
+                    )
                 }
             }
         }
 
-        return null
+        /*
+         * Scanner frame.
+         */
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(270.dp)
+                .border(
+                    width = 3.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(20.dp)
+                )
+        )
+
+        /*
+         * Status card.
+         */
+        Card(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor =
+                    MaterialTheme.colorScheme.surface.copy(
+                        alpha = 0.96f
+                    )
+            )
+        ) {
+
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+
+                val statusIcon =
+                    when {
+                        scannerStatus.startsWith(
+                            "Recipient found"
+                        ) -> Icons.Default.CheckCircle
+
+                        scannerStatus.startsWith(
+                            "QR detected"
+                        ) -> Icons.Default.QrCodeScanner
+
+                        errorMessage != null ->
+                            Icons.Default.ErrorOutline
+
+                        else ->
+                            Icons.Default.QrCodeScanner
+                    }
+
+                Icon(
+                    imageVector = statusIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                Text(
+                    text = scannerStatus,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+
+                if (errorMessage != null) {
+
+                    Spacer(
+                        modifier = Modifier.height(6.dp)
+                    )
+
+                    Text(
+                        text = errorMessage!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                /*
+                 * This is intentionally visible while testing.
+                 * It proves whether ML Kit actually received QR data.
+                 */
+                if (!detectedRawValue.isNullOrBlank()) {
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    Text(
+                        text = "QR data detected",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                Text(
+                    text = if (cameraStarted) {
+                        "Place the recipient QR code inside the frame."
+                    } else {
+                        "Starting camera..."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
