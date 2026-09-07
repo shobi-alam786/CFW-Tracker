@@ -1,9 +1,14 @@
 package com.example
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -31,6 +36,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.components.BulkImportDialog
 import com.example.ui.screens.CollectionEntryScreen
@@ -38,6 +45,7 @@ import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.KoboDataScreen
 import com.example.ui.screens.KoboSubmissionDetailScreen
 import com.example.ui.screens.PersonProfileScreen
+import com.example.ui.screens.ProjectWorkflowScreen
 import com.example.ui.screens.ReportsScreen
 import com.example.ui.screens.SearchScreen
 import com.example.ui.screens.SettingsScreen
@@ -69,6 +77,7 @@ data class NavItem(
 
 @Composable
 fun CfwAppMainContent(viewModel: MainViewModel) {
+    val context = LocalContext.current
     val currentTab by viewModel.currentTab.collectAsState()
     val selectedBeneficiaryId by viewModel.selectedBeneficiaryId.collectAsState()
     val pendingSyncCount by viewModel.pendingSyncCount.collectAsState()
@@ -84,6 +93,26 @@ fun CfwAppMainContent(viewModel: MainViewModel) {
     val koboViewModel: KoboViewModel = viewModel()
     var showKoboData by remember { mutableStateOf(false) }
     var selectedKoboSubmissionId by remember { mutableStateOf<Long?>(null) }
+
+    // CFW MaterialFlow project workflow (Engineer estimate / Boss approval / TM daily
+    // request): same full-screen-overlay pattern as Kobo Data above, so it doesn't touch
+    // the existing 5-tab bottom navigation.
+    var showProjectWorkflow by remember { mutableStateOf(false) }
+
+    // Android 13+ requires runtime permission to show notifications at all; without it,
+    // approvals/dispatches/material alerts still land in the in-app Alerts tab (Room), they
+    // just won't reach the system tray. Same request-once pattern as the camera permission
+    // in RecipientQrScannerScreen.
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* no UI change needed either way; Room-backed Alerts tab covers the denied case */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!granted) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     LaunchedEffect(userNotice) {
         userNotice?.let { notice ->
@@ -103,7 +132,7 @@ fun CfwAppMainContent(viewModel: MainViewModel) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (selectedBeneficiaryId == null && !showKoboData) {
+            if (selectedBeneficiaryId == null && !showKoboData && !showProjectWorkflow) {
                 NavigationBar {
                     navItems.forEach { item ->
                         val isSelected = currentTab == item.tab
@@ -133,7 +162,9 @@ fun CfwAppMainContent(viewModel: MainViewModel) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (showKoboData) {
+            if (showProjectWorkflow) {
+                ProjectWorkflowScreen(onBack = { showProjectWorkflow = false })
+            } else if (showKoboData) {
                 if (selectedKoboSubmissionId != null) {
                     KoboSubmissionDetailScreen(
                         submissionId = selectedKoboSubmissionId!!,
@@ -170,7 +201,8 @@ fun CfwAppMainContent(viewModel: MainViewModel) {
                         onOpenKoboData = {
                             selectedKoboSubmissionId = null
                             showKoboData = true
-                        }
+                        },
+                        onOpenProjectWorkflow = { showProjectWorkflow = true }
                     )
                     AppTab.NEW_ENTRY -> CollectionEntryScreen(
                         viewModel = viewModel,

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Engineering
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Inventory
@@ -73,6 +74,7 @@ fun DashboardScreen(
     viewModel: MainViewModel,
     onOpenBulkImport: () -> Unit,
     onOpenKoboData: () -> Unit,
+    onOpenProjectWorkflow: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val totalBeneficiaries by viewModel.totalBeneficiariesCount.collectAsState()
@@ -142,7 +144,7 @@ fun DashboardScreen(
                                 .padding(16.dp)
                         ) {
                             Text(
-                                text = "CFW Materials Tracker",
+                                text = "CFW MaterialFlow",
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -286,6 +288,54 @@ fun DashboardScreen(
                         )
                         Text(
                             text = "View Kobo Data submissions",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // CFW MaterialFlow project workflow entry point (Engineer estimate / Boss approval / TM daily request)
+        item {
+            Card(
+                onClick = onOpenProjectWorkflow,
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Engineering,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                        Text(
+                            text = "Project Workflow",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Engineer estimate, Boss approval, daily material request",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
